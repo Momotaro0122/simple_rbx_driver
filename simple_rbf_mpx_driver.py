@@ -1,16 +1,51 @@
 """Simple RBF Driver MPxNode for Maya.
-
+Author : MingHan(Martin) Lee
+Last Date: 20260703
 Load as a Python plug-in, then open the UI:
 
     import maya.cmds as cmds
-    cmds.loadPlugin(r"C:\path\to\simple_rbf_mpx_driver.py")
-
+    plugin_path = r"C:/Users/Martin/Documents/maya/2023/scripts/simple_rbf_mpx_driver.py"
+    if cmds.pluginInfo(plugin_path, q=True, loaded=True):
+        cmds.unloadPlugin(plugin_path)
+    cmds.loadPlugin(plugin_path)
     import simple_rbf_mpx_driver
     simple_rbf_mpx_driver.show()
 
-This version is a real DG node. Arbitrary numeric driver attributes are
-connected to driverInput[], and output[] is connected to driven attributes.
-It evaluates during Maya DG refresh instead of relying on scriptJob.
+-V1.0.0
+-此版本是一個真正的DG節點。任意數值驅動屬性連接到driverInput[]，output[]連接到驅動屬性。
+-它在Maya DG刷新期間進行評估，而不是依賴scriptJob。
+*練習版本，只針對RBF模式應用，並無使用vector angle between作為輔助或第二模式。
+
+主要運算模式:
+####################
+===  Bind Pose  ===
+####################
+    ->抓關鍵向量訊息 driver = [x y z twist]
+
+    ->歐式距離矩陣
+
+    ->導入逆指數函數(Gaussian)求出phi φ (Influence)
+
+    ->normalized phi (加起來都會等於1)
+
+    ->利用LU分解解出Weight Matrix
+
+    ->ΦW=Y
+
+####################
+===   Runtime   ===
+####################
+    ->抓關鍵向量訊息 driver = [x y z twist]
+
+    ->和所有 Pose 算距離
+
+    ->導入逆指數函數(Gaussian)求出phi φ (Influence)
+
+    ->利用LU分解解出Weight Matrix
+
+    ->Output = W × φ
+
+    ->Corrective Joint Weight
 """
 
 from __future__ import annotations
@@ -57,16 +92,27 @@ def _as_float(value, fallback=0.0):
 
 
 def distance(a, b):
+    """Return the 歐式距離(Euclidean distance).
+    >>> d = sprt((x2-x1)**2 + (y2-y1)**2)
+    """
     return math.sqrt(sum((float(x) - float(y)) ** 2 for x, y in zip(a, b)))
 
 
 def gaussian(distance_value, radius):
+    """徑向基函數核 Radial Basis Function Core
+    >>> Gaussian Kernel
+    >>> 逆指數函數 Inverse exponential function
+    >>> 求出 φ
+    """
     width = radius if radius > 1.0e-8 else 1.0
     x = distance_value / width
     return math.exp(-(x * x))
 
 
 def normalize(values):
+    """將φ 進行規範化(0~1)
+    >>>distance weight -> activation weight
+    """
     total = sum(values)
     if abs(total) < 1.0e-12:
         return [0.0 for _ in values]
@@ -74,10 +120,12 @@ def normalize(values):
 
 
 def distance_matrix(poses):
+    """將歐式距離轉換為矩陣"""
     return [[distance(a, b) for b in poses] for a in poses]
 
 
 def mean_off_diagonal(matrix):
+    """求矩阵中非對角線平均值"""
     values = []
     for row_index, row in enumerate(matrix):
         for col_index in range(row_index + 1, len(row)):
@@ -98,6 +146,10 @@ def transpose(matrix):
 
 
 def lu_decompose(matrix, epsilon=0.0):
+    """LU分解
+    >>> 用於解求解n元一次線性方程组(這邊是矩陣)
+    >>> 求出 weight matrix
+    """
     size = len(matrix)
     lu = [list(row) for row in matrix]
     perm = list(range(size))
@@ -219,6 +271,9 @@ def _disconnect_destination(destination):
 
 
 class SimpleRbfMpxNode(om.MPxNode):
+    """
+    Maya MPxNode 初始化
+    """
     driverInput = om.MObject()
     allowNegativeWeights = om.MObject()
     rbfData = om.MObject()
@@ -230,6 +285,7 @@ class SimpleRbfMpxNode(om.MPxNode):
 
     @staticmethod
     def initialize():
+        """設置node本身的節點"""
         numeric_attr = om.MFnNumericAttribute()
         typed_attr = om.MFnTypedAttribute()
 
@@ -277,6 +333,9 @@ class SimpleRbfMpxNode(om.MPxNode):
         SimpleRbfMpxNode.attributeAffects(SimpleRbfMpxNode.rbfData, SimpleRbfMpxNode.output)
 
     def compute(self, plug, data_block):
+        """
+        最主要運算
+        """
         is_output = plug.attribute() == SimpleRbfMpxNode.output
         is_output_element = plug.isElement and plug.array().attribute() == SimpleRbfMpxNode.output
         if not is_output and not is_output_element:
@@ -321,6 +380,9 @@ class SimpleRbfMpxNode(om.MPxNode):
             raise
 
 
+##############
+#===  UI  ===#
+##############
 class SimpleRbfMpxUI(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super(SimpleRbfMpxUI, self).__init__(parent or _maya_main_window())
@@ -558,7 +620,9 @@ def show():
     dialog.show()
     return dialog
 
-
+###########################
+#===  Maya Node 初始化  ===#
+###########################
 def initializePlugin(plugin):
     plugin_fn = om.MFnPlugin(plugin, "MingHan(Martin) Lee", "1.0.0", "Any")
     plugin_fn.registerNode(
